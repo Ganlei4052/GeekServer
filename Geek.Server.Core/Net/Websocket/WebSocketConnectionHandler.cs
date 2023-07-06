@@ -1,13 +1,7 @@
 ﻿using Geek.Server.Core.Hotfix;
 using Geek.Server.Core.Net.BaseHandler;
 using Geek.Server.Core.Net.Tcp;
-using Microsoft.AspNetCore.Connections;
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Net.WebSockets;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace Geek.Server.Core.Net.Websocket
 {
@@ -20,11 +14,6 @@ namespace Geek.Server.Core.Net.Websocket
             WebSocketChannel channel = null;
             channel = new WebSocketChannel(socket, new DefaultMessageProtocol(), (msg) => _ = Dispatcher(channel, msg), () => OnDisconnection(channel));
             return channel.StartAsync();
-        }
-
-        protected virtual void OnConnection(ConnectionContext connection)
-        {
-            LOGGER.Debug($"{connection.RemoteEndPoint?.ToString()} 链接成功");
         }
 
         protected virtual void OnDisconnection(INetChannel channel)
