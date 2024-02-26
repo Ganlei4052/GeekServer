@@ -1,52 +1,34 @@
-﻿using Bedrock.Framework.Protocols;
-using Geek.Server.Core.Net.BaseHandler;
-using System;
-using System.Buffers;
+﻿using Geek.Server.Core.Serialize;
+using MessagePack;
+using PolymorphicMessagePack;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.IO.Pipelines;
-using System.Linq;
-using System.Net.Sockets;
+using System.Diagnostics;
+using System.IO;
 using System.Net.WebSockets;
-using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
-using static System.Net.Mime.MediaTypeNames;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace Geek.Server.Core.Net.Websocket
 {
-    public class WebSocketChannel : INetChannel
+    public class WebSocketChannel : NetChannel
     {
         static readonly NLog.Logger LOGGER = NLog.LogManager.GetCurrentClassLogger();
         WebSocket webSocket;
-        IProtocal<Message> protocal;
-        ConcurrentDictionary<string, object> datas = new();
+        readonly Action<Message> onMessage;
+        protected readonly ConcurrentQueue<Message> sendQueue = new();
+        protected readonly SemaphoreSlim newSendMsgSemaphore = new(0); 
 
-        Action<Message> onMessageAct;
-        Action onConnectCloseAct;
-        bool triggerCloseEvt = true;
-        public ProtocolReader Reader { get; protected set; }
-        protected ProtocolWriter Writer { get; set; }
-        IDuplexPipe appPipe;
-        public string RemoteAddress => "";
-
-        public WebSocketChannel(WebSocket webSocket, IProtocal<Message> protocal, Action<Message> onMessage = null, Action onConnectClose = null)
+        public WebSocketChannel(WebSocket webSocket, string remoteAddress, Action<Message> onMessage = null)
         {
+            this.RemoteAddress = remoteAddress;
             this.webSocket = webSocket;
-            this.protocal = protocal;
-            var pair = DuplexPipe.CreateConnectionPair(PipeOptions.Default, PipeOptions.Default);
-            Reader = pair.Transport.CreateReader();
-            Writer = pair.Transport.CreateWriter();
-            appPipe = pair.Application;
-            onMessageAct = onMessage;
-            onConnectCloseAct = onConnectClose;
+            this.onMessage = onMessage;
         }
 
-        public async Task Close(bool triggerCloseEvt = true)
+        public override async void Close()
         {
-            this.triggerCloseEvt = triggerCloseEvt;
             try
             {
+                base.Close();
                 await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "socketclose", CancellationToken.None);
             }
             catch
@@ -58,150 +40,115 @@ namespace Geek.Server.Core.Net.Websocket
             }
         }
 
-        public async Task StartAsync()
+        public override async Task StartAsync()
         {
             try
             {
                 _ = DoSend();
-                _ = DoProcessMessage();
                 await DoRevice();
+            }
+            catch (OperationCanceledException)
+            {
             }
             catch (Exception e)
             {
-                LOGGER.Debug(e.Message);
+                LOGGER.Error(e.Message);
             }
-            finally
-            {
-                if (triggerCloseEvt)
-                {
-                    onConnectCloseAct?.Invoke();
-                }
-            }
-        }
-
-        async ValueTask SendMultiSegmentAsync(ReadOnlySequence<byte> buffer)
-        {
-            var position = buffer.Start;
-            buffer.TryGet(ref position, out var prevSegment);
-            while (buffer.TryGet(ref position, out var segment))
-            {
-                await webSocket.SendAsync(prevSegment, WebSocketMessageType.Binary, false, CancellationToken.None);
-                prevSegment = segment;
-            }
-
-            // End of message frame
-            await webSocket.SendAsync(prevSegment, WebSocketMessageType.Binary, true, CancellationToken.None);
-        }
-
-        ValueTask SendAsync(ReadOnlySequence<byte> buffer)
-        {
-            return buffer.IsSingleSegment
-                ? webSocket.SendAsync(buffer.First, WebSocketMessageType.Binary, true, CancellationToken.None)
-                : SendMultiSegmentAsync(buffer);
         }
 
         async Task DoSend()
         {
-            while (!IsClose())
+            try
             {
-                var result = await appPipe.Input.ReadAsync();
-                var buffer = result.Buffer;
-
-                if (result.IsCanceled)
+                var array = new object[2];
+                var closeToken = closeSrc.Token;
+                while (!closeToken.IsCancellationRequested)
                 {
-                    break;
-                }
+                    await newSendMsgSemaphore.WaitAsync(closeToken);
 
-                var end = buffer.End;
-                var isCompleted = result.IsCompleted;
-                if (!buffer.IsEmpty)
-                {
-                    await SendAsync(buffer);
-                }
-
-                appPipe.Input.AdvanceTo(end);
-
-                if (isCompleted)
-                {
-                    break;
+                    if (!sendQueue.TryDequeue(out var message))
+                    {
+                        continue;
+                    }
+                    array[0] = message.MsgId;
+                    array[1] = message;
+                    //这里为了应对前端是js等不方便处理多态的情况 
+                    var data = MessagePackSerializer.Serialize(array, MessagePackSerializerOptions.Standard);
+#if DEBUG
+                    LOGGER.Info("发送消息:" + MessagePackSerializer.ConvertToJson(data));
+#endif
+                    await webSocket.SendAsync(data, WebSocketMessageType.Binary, true, closeToken);
                 }
             }
+            catch
+            {
+
+            }
+        }
+
+        Message DeserializeMsg(MemoryStream stream)
+        {
+            var data = stream.GetBuffer();
+            var reader = new MessagePackReader(new ReadOnlyMemory<byte>(data, 0, (int)stream.Length));
+            Type type = null;
+            if (reader.NextMessagePackType == MessagePackType.Array)
+            {
+                var count = reader.ReadArrayHeader();
+                if (count != 2)
+                    throw new MessagePackSerializationException("Invalid polymorphic array count");
+                if (reader.NextMessagePackType == MessagePackType.Integer)
+                {
+                    var typeId = reader.ReadInt32();
+                    if (!PolymorphicTypeMapper.TryGet(typeId, out type))
+                        throw new MessagePackSerializationException($"Cannot find Type Id: {typeId} registered in {nameof(PolymorphicTypeMapper)}");
+                }
+            }
+            else
+            {
+                throw new MessagePackSerializationException("不是正确的序列化格式...");
+            }
+
+            return MessagePackSerializer.Deserialize(type, ref reader, MessagePackSerializerOptions.Standard) as Message;
         }
 
         async Task DoRevice()
         {
-            while (!IsClose())
-            {
-                var buffer = appPipe.Output.GetMemory();
+            var stream = new MemoryStream();
+            var buffer = new ArraySegment<byte>(new byte[2048]);
 
-                var result = await webSocket.ReceiveAsync(buffer, CancellationToken.None);
+            var closeToken = closeSrc.Token;
+            while (!closeToken.IsCancellationRequested)
+            {
+                int len = 0;
+                WebSocketReceiveResult result;
+                stream.SetLength(0);
+                stream.Seek(0, SeekOrigin.Begin);
+                do
+                {
+                    result = await webSocket.ReceiveAsync(buffer, closeToken);
+                    len += result.Count;
+                    stream.Write(buffer.Array, buffer.Offset, result.Count);
+                } while (!result.EndOfMessage);
 
                 if (result.MessageType == WebSocketMessageType.Close)
-                {
-                    await Close();
-                    return;
-                }
-
-                appPipe.Output.Advance(result.Count);
-
-                var flushTask = appPipe.Output.FlushAsync();
-
-                if (!flushTask.IsCompleted)
-                {
-                    await flushTask.ConfigureAwait(false);
-                }
-            }
-        }
-
-        async Task DoProcessMessage()
-        {
-            while (!IsClose())
-            {
-                try
-                {
-                    var result = await Reader.ReadAsync(protocal);
-                    var message = result.Message;
-                    if (message != null)
-                        onMessageAct?.Invoke(message);
-                    if (result.IsCompleted)
-                        break;
-                }
-                catch (Exception e)
-                {
-                    // LOGGER.Error(e.Message);
                     break;
-                }
+
+                stream.Seek(0, SeekOrigin.Begin);
+                //这里默认用多态类型的反序列方式，里面做了兼容处理 
+                var message = DeserializeMsg(stream);// Serializer.Deserialize<Message>(stream);
+
+#if DEBUG
+                LOGGER.Info("收到消息:" +message.GetType().Name+"  " + MessagePackSerializer.SerializeToJson(message));
+#endif
+                onMessage(message);
             }
+            stream.Close();
         }
 
-
-        public bool IsClose()
+        public override void Write(Message msg)
         {
-            return webSocket == null || webSocket.State == WebSocketState.Closed || webSocket.State == WebSocketState.Aborted;
-        }
-
-        public T GetData<T>(string key)
-        {
-            if (datas.TryGetValue(key, out var v))
-            {
-                return (T)v;
-            }
-            return default(T);
-        }
-
-        public void RemoveData(string key)
-        {
-            datas.Remove(key, out _);
-        }
-
-        public void SetData(string key, object v)
-        {
-            datas[key] = v;
-        }
-
-        public ValueTask Write(object msg)
-        {
-            return Writer.WriteAsync(protocal, msg as Message);
+            sendQueue.Enqueue(msg);
+            newSendMsgSemaphore.Release();
         }
     }
 }

@@ -1,5 +1,5 @@
 using PolymorphicMessagePack;
-namespace Protocol
+namespace Geek.Server.Proto
 {
 	public partial class PolymorphicRegister
 	{
@@ -18,6 +18,8 @@ namespace Protocol
 			PolymorphicTypeMapper.Register<Geek.Server.Proto.ReqUseItem>();
 			PolymorphicTypeMapper.Register<Geek.Server.Proto.ReqSellItem>();
 			PolymorphicTypeMapper.Register<Geek.Server.Proto.ResItemChange>();
+			PolymorphicTypeMapper.Register<ClientProto.NetConnectMessage>();
+			PolymorphicTypeMapper.Register<ClientProto.NetDisConnectMessage>();
 			PolymorphicTypeMapper.Register<Geek.Server.Proto.A>();
 			PolymorphicTypeMapper.Register<Geek.Server.Proto.B>();
 			PolymorphicTypeMapper.Register<Geek.Server.Proto.ReqLogin>();

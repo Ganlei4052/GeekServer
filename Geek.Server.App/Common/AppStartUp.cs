@@ -2,13 +2,10 @@
 using Geek.Server.Core.Comps;
 using Geek.Server.Core.Hotfix;
 using Geek.Server.Core.Storage;
-using Geek.Server.Core.Utils;
 using Geek.Server.Proto;
 using NLog;
 using NLog.Config;
-using NLog.LayoutRenderers;
 using PolymorphicMessagePack;
-using Protocol;
 
 namespace Geek.Server.App.Common
 {
@@ -35,11 +32,8 @@ namespace Geek.Server.App.Common
                 Console.WriteLine("***进入游戏主循环***");
                 Settings.LauchTime = DateTime.Now;
                 Settings.AppRunning = true;
-                TimeSpan delay = TimeSpan.FromSeconds(1);
-                while (Settings.AppRunning)
-                {
-                    await Task.Delay(delay);
-                }
+
+                await Settings.AppExitToken;
             }
             catch (Exception e)
             {
@@ -58,13 +52,18 @@ namespace Geek.Server.App.Common
             {
                 Settings.Load<AppSetting>("Configs/app_config.json", ServerType.Game);
                 Console.WriteLine("init NLog config...");
-                LayoutRenderer.Register<NLogConfigurationLayoutRender>("logConfiguration");
+                LogManager.Setup().SetupExtensions(s => s.RegisterConditionMethod("logState", (e) => Settings.IsDebug ? "debug" : "release"));
                 LogManager.Configuration = new XmlLoggingConfiguration("Configs/app_log.config");
                 LogManager.AutoShutdown = false;
 
                 PolymorphicTypeMapper.Register(typeof(AppStartUp).Assembly); //app
                 PolymorphicRegister.Load();
-                PolymorphicResolver.Instance.Init();
+                PolymorphicResolver.Instance.Init(); 
+
+                //mongodb bson
+                BsonClassMapHelper.SetConvention();
+                BsonClassMapHelper.RegisterAllClass(typeof(ReqLogin).Assembly);
+                BsonClassMapHelper.RegisterAllClass(typeof(Program).Assembly);
 
                 return true;
             }

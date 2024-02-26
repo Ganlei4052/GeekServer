@@ -1,8 +1,9 @@
 ﻿using Base.Net;
+using ClientProto;
 using Geek.Client;
 using Geek.Server;
 using Geek.Server.Proto;
-using Protocol;
+
 using System.Collections.Generic;
 using System.Text;
 using System.Threading.Tasks;
@@ -47,6 +48,7 @@ namespace Logic
         {
             msg.UniId = UniId++;
             GameClient.Singleton.Send(msg);
+            UnityEngine.Debug.Log("开始等待消息:" + msg.UniId);
             return MsgWaiter.StartWait(msg.UniId);
         }
 
@@ -57,8 +59,7 @@ namespace Logic
 
         public void RegisterEventListener()
         {
-            AddListener(GameClient.ConnectEvt, OnConnectServer);
-            AddListener(GameClient.DisconnectEvt, OnDisconnectServer);
+            AddListener(NetDisConnectMessage.MsgID, OnDisconnectServer);
             AddListener(ResLogin.MsgID, OnResLogin);
             AddListener(ResBagInfo.MsgID, OnResBagInfo);
             AddListener(ResComposePet.MsgID, OnResComposePet);
@@ -85,21 +86,6 @@ namespace Logic
                 UnityEngine.Debug.Log("服务器提示:" + res.Desc);
         }
 
-
-        private void OnConnectServer(Event e)
-        {
-            var code = (NetCode)e.Data;
-            if (code == NetCode.Success)
-            {
-                UnityEngine.Debug.Log("连接服务器成功!");
-                MsgWaiter.EndWait(GameClient.ConnectEvt);
-            }
-            else
-            {
-                UnityEngine.Debug.Log("连接服务器失败!");
-                MsgWaiter.EndWait(GameClient.ConnectEvt, false);
-            }
-        }
 
         private void OnDisconnectServer(Event e)
         {
@@ -132,7 +118,6 @@ namespace Logic
             var msg = GetCurMsg<ResComposePet>(e.Data);
             var str = $"合成宠物成功{msg.PetId}";
             UnityEngine.Debug.Log(str);
-            GameMain.Singleton.AppendLog(str);
         }
 
     }

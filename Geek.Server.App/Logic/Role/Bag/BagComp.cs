@@ -6,7 +6,7 @@ namespace Geek.Server.App.Logic.Role.Bag
 {
 
     public class BagState : CacheState
-    {
+    { 
         public Dictionary<int, long> ItemMap = new Dictionary<int, long>();
     }
 

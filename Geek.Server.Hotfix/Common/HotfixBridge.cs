@@ -11,7 +11,6 @@ using Geek.Server.Core.Timer;
 using Geek.Server.Core.Utils;
 using Microsoft.AspNetCore.Connections;
 using PolymorphicMessagePack;
-using Protocol;
 
 namespace Server.Logic.Common
 {
@@ -47,19 +46,29 @@ namespace Server.Logic.Common
 
         public async Task Stop()
         {
-            // 断开所有连接
-            await SessionManager.RemoveAll();
-            // 取消所有未执行定时器
-            await QuartzTimer.Stop();
-            // 保证actor之前的任务都执行完毕
-            await ActorMgr.AllFinish();
-            // 关闭网络服务
-            await HttpServer.Stop();
-            await TcpServer.Stop();
-            await WebSocketServer.Stop();
-            // 存储所有数据
-            await GlobalTimer.Stop();
-            await ActorMgr.RemoveAll();
+            try
+            {
+                // 断开所有连接
+                await SessionManager.RemoveAll();
+                // 取消所有未执行定时器
+                await QuartzTimer.Stop();
+                // 保证actor之前的任务都执行完毕
+                await ActorMgr.AllFinish();
+                // 关闭网络服务
+                await HttpServer.Stop();
+                await TcpServer.Stop();
+                await WebSocketServer.Stop();
+            }
+            catch (Exception e)
+            {
+                Log.Error(e);
+            }
+            finally
+            {
+                // 存储所有数据
+                await GlobalTimer.Stop();
+                await ActorMgr.RemoveAll();
+            }
         }
     }
 }
